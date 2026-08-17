@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Windows key -> Shift+Tab, so gamescope triggers Steam's guide hotkey.
+
+Steam registers its shortcuts directly with gamescope; the journal shows this
+at session start:
+
+    binding: (GuideKeyboardHotkey) -> Adding new trigger [Tab + Shift_L]
+    binding: (QAMKeyboardHotkey)   -> Adding new trigger [Tab + Control_L + Shift_L]
+
+Because gamescope evaluates those combinations itself, going through a virtual
+keyboard device works everywhere, including inside a running game.  The earlier
+route via xbindkeys and Ctrl+1 could not work in principle -- Steam lives on
+XWayland :0 and games on :1 -- and in practice never saw the key at all.
+
+The real Meta key is deliberately NOT grabbed: that would mean taking the
+keyboard exclusively and replaying every keystroke.  A bare Meta with no
+companion key does nothing in either gamescope or Steam, so acting only on
+release costs nothing.
+"""
+
+import sys
+import time
+
+import evdev
+from evdev import InputDevice, UInput, ecodes as e
+
+KEYBOARD_NAME = "AT Translated Set 2 keyboard"
+WAIT_SECONDS = 30
+
+
+def find_keyboard():
+    for path in evdev.list_devices():
+        try:
+            dev = InputDevice(path)
+        except OSError:
+            continue
+        if dev.name == KEYBOARD_NAME and e.KEY_LEFTMETA in dev.capabilities().get(e.EV_KEY, []):
+            return dev
+        dev.close()
+    return None
+
+
+def wait_for_keyboard():
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        kbd = find_keyboard()
+        if kbd is not None:
+            return kbd
+        if time.monotonic() > deadline:
+            sys.exit(f"keyboard {KEYBOARD_NAME!r} not found")
+        time.sleep(1)
+
+
+def main():
+    kbd = wait_for_keyboard()
+    ui = UInput({e.EV_KEY: [e.KEY_LEFTSHIFT, e.KEY_TAB]}, name="GPD Win Key")
+    print(f"listening on {kbd.name} ({kbd.path})", flush=True)
+
+    meta_down = False
+    companion = False
+
+    for event in kbd.read_loop():
+        if event.type != e.EV_KEY:
+            continue
+
+        if event.code == e.KEY_LEFTMETA:
+            if event.value == 1:
+                meta_down, companion = True, False
+            elif event.value == 0 and meta_down:
+                meta_down = False
+                # If the key was part of a combination -- Super+F for
+                # gamescope's fullscreen, say -- the menu was not meant.
+                if companion:
+                    continue
+                for code, value in ((e.KEY_LEFTSHIFT, 1), (e.KEY_TAB, 1),
+                                    (e.KEY_TAB, 0), (e.KEY_LEFTSHIFT, 0)):
+                    ui.write(e.EV_KEY, code, value)
+                    ui.syn()
+                print(f"{time.strftime('%T')} Win released -> Shift+Tab", flush=True)
+
+        elif event.value == 1 and meta_down:
+            companion = True
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

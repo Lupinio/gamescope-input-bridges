@@ -1,0 +1,14 @@
+[Unit]
+Description=Windows key to Shift+Tab (Steam menu) for the gamescope session
+PartOf=gamescope-session.target
+After=gamescope-session.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gamescope-win-taste
+Restart=on-failure
+RestartSec=2
+Slice=session.slice
+
+[Install]
+WantedBy=gamescope-session.target

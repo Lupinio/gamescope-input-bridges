@@ -1,0 +1,14 @@
+[Unit]
+Description=Stylus to touchscreen bridge for the gamescope session
+PartOf=gamescope-session.target
+After=gamescope-session.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gamescope-pen-touch
+Restart=on-failure
+RestartSec=2
+Slice=session.slice
+
+[Install]
+WantedBy=gamescope-session.target

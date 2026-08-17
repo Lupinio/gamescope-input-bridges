@@ -1,0 +1,4 @@
+# Give the logged-in seat user read access to the built-in Goodix stylus, so the
+# user-level gamescope-pen-touch.service can read it without being in the input
+# group.  Only this one device gets an ACL, not every input node.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TABLET}=="1", ATTRS{name}=="*Stylus*", TAG+="uaccess"

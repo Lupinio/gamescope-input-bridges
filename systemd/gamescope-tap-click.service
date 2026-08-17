@@ -1,0 +1,14 @@
+[Unit]
+Description=Tap-to-click for the built-in touchpad in the gamescope session
+PartOf=gamescope-session.target
+After=gamescope-session.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gamescope-tap-click
+Restart=on-failure
+RestartSec=2
+Slice=session.slice
+
+[Install]
+WantedBy=gamescope-session.target

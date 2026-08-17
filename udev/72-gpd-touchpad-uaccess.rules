@@ -1,0 +1,4 @@
+# Give the logged-in seat user read access to the built-in touchpad, so the
+# user-level gamescope-tap-click.service can read it without being in the input
+# group.  Only this one device gets an ACL, not every input node.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", ATTRS{name}=="PNP0C50:00 093A:0255 Touchpad", TAG+="uaccess"

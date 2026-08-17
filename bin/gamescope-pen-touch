@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Bridge the built-in stylus onto a virtual touchscreen for the gamescope session.
+
+gamescope ships no tablet protocol at all -- there is no zwp_tablet_manager_v2 in
+the binary -- so every stylus event is dropped in Gaming Mode, while the same pen
+works fine under KWin on the desktop.  Touch on the other hand gamescope handles
+natively, so read the pen and replay tip-down as a single-finger touch.
+
+Started as part of gamescope-session.target only, so desktop pen behaviour
+(hover, pressure, barrel button) stays untouched.
+"""
+
+import sys
+import time
+
+import evdev
+from evdev import AbsInfo, InputDevice, UInput, ecodes as e
+
+PEN_NAME = "Stylus"
+WAIT_SECONDS = 30
+
+
+def find_pen():
+    for path in evdev.list_devices():
+        try:
+            dev = InputDevice(path)
+        except OSError:
+            continue
+        if PEN_NAME in dev.name and e.BTN_TOOL_PEN in dev.capabilities().get(e.EV_KEY, []):
+            return dev
+        dev.close()
+    return None
+
+
+def wait_for_pen():
+    """The i2c pen is usually there at boot, but give it a moment after resume."""
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        pen = find_pen()
+        if pen is not None:
+            return pen
+        if time.monotonic() > deadline:
+            sys.exit("no stylus with BTN_TOOL_PEN found")
+        time.sleep(1)
+
+
+def make_touchscreen(pen):
+    abs_caps = dict(pen.capabilities()[e.EV_ABS])
+
+    def axis(code):
+        src = abs_caps[code]
+        return AbsInfo(value=0, min=src.min, max=src.max, fuzz=0, flat=0,
+                       resolution=src.resolution)
+
+    x, y = axis(e.ABS_X), axis(e.ABS_Y)
+    caps = {
+        e.EV_KEY: [e.BTN_TOUCH],
+        e.EV_ABS: [
+            (e.ABS_X, x),
+            (e.ABS_Y, y),
+            (e.ABS_MT_SLOT, AbsInfo(0, 0, 0, 0, 0, 0)),
+            (e.ABS_MT_TRACKING_ID, AbsInfo(0, 0, 65535, 0, 0, 0)),
+            (e.ABS_MT_POSITION_X, x),
+            (e.ABS_MT_POSITION_Y, y),
+        ],
+    }
+    # INPUT_PROP_DIRECT is what makes udev tag this ID_INPUT_TOUCHSCREEN instead
+    # of ID_INPUT_TOUCHPAD, which is what gamescope looks for.
+    return UInput(caps, name="GPD Stylus Touchscreen", vendor=0x27C6,
+                  product=0x0113, version=1, input_props=[e.INPUT_PROP_DIRECT])
+
+
+def main():
+    pen = wait_for_pen()
+    ui = make_touchscreen(pen)
+    # No ui.device here: python-evdev can only fill that in if it may re-open the
+    # node it just created, which needs input-group rights we deliberately skip.
+    print(f"bridging {pen.name} ({pen.path}) -> uinput touchscreen", flush=True)
+
+    try:
+        pen.grab()
+    except OSError as err:
+        # Not fatal: gamescope ignores tablet events anyway, we just mirror them.
+        print(f"could not grab pen ({err}), mirroring instead", flush=True)
+
+    pos = {e.ABS_X: None, e.ABS_Y: None}
+    moved = False
+    down = False
+    want_down = False
+    tracking_id = 0
+
+    def write_position():
+        ui.write(e.EV_ABS, e.ABS_MT_POSITION_X, pos[e.ABS_X])
+        ui.write(e.EV_ABS, e.ABS_MT_POSITION_Y, pos[e.ABS_Y])
+        ui.write(e.EV_ABS, e.ABS_X, pos[e.ABS_X])
+        ui.write(e.EV_ABS, e.ABS_Y, pos[e.ABS_Y])
+
+    for event in pen.read_loop():
+        if event.type == e.EV_ABS and event.code in pos:
+            pos[event.code] = event.value
+            moved = True
+        elif event.type == e.EV_KEY and event.code == e.BTN_TOUCH:
+            want_down = bool(event.value)
+        elif event.type == e.EV_SYN and event.code == e.SYN_REPORT:
+            have_pos = None not in pos.values()
+            if want_down and not down and have_pos:
+                tracking_id = (tracking_id + 1) % 65535
+                ui.write(e.EV_ABS, e.ABS_MT_SLOT, 0)
+                ui.write(e.EV_ABS, e.ABS_MT_TRACKING_ID, tracking_id)
+                write_position()
+                ui.write(e.EV_KEY, e.BTN_TOUCH, 1)
+                ui.syn()
+                down = True
+            elif want_down and down and moved:
+                ui.write(e.EV_ABS, e.ABS_MT_SLOT, 0)
+                write_position()
+                ui.syn()
+            elif not want_down and down:
+                ui.write(e.EV_ABS, e.ABS_MT_SLOT, 0)
+                ui.write(e.EV_ABS, e.ABS_MT_TRACKING_ID, -1)
+                ui.write(e.EV_KEY, e.BTN_TOUCH, 0)
+                ui.syn()
+                down = False
+            moved = False
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
